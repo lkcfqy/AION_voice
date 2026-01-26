@@ -4,47 +4,46 @@ from src.config import HDC_DIM, LSM_N_NEURONS, SEED
 
 class RandomProjectionAdapter:
     """
-    Projects LSM analog activity into HDC binary space using Random Projection.
-    serves as Locality Sensitive Hashing (LSH).
-    Task 1.2: The Adapter
+    使用随机投影将 LSM 模拟活动投影到 HDC 二进制空间。
+    作为局部敏感哈希 (LSH) 使用。
     """
     def __init__(self, device='cpu'):
         self.input_dim = LSM_N_NEURONS
         self.output_dim = HDC_DIM
         self.device = device
         
-        # Initialize Random Projection Matrix
-        # Shape: (Output, Input) -> (10000, 1000)
-        # We use a fixed seed for reproducibility of the "concept space"
+        # 初始化随机投影矩阵
+        # 形状：(输出, 输入) -> (10000, 400)
+        # 我们使用固定种子以确保“概念空间”的可重复性
         torch.manual_seed(SEED)
         
-        # Standard Normal Distribution for projection weights
-        # Why Gaussian? It guarantees LSH property for cosine similarity (SimHash)
+        # 投影权重的标准正态分布
+        # 为什么使用高斯分布？它保证了余弦相似性的 LSH 属性 (SimHash)
         self.projection_matrix = torch.randn(self.output_dim, self.input_dim, device=self.device)
         
-        # Freeze weights (no learning here, just projection)
+        # 冻结权重（这里不进行学习，仅进行投影）
         self.projection_matrix.requires_grad_(False)
         
     def forward(self, lsm_activity):
         """
-        Args:
-            lsm_activity: (N_neurons,) numpy array or tensor
-        Returns:
-            hdc_vector: (HDC_DIM,) tensor of {-1, 1}
+        参数:
+            lsm_activity: (N_neurons,) numpy 数组或张量
+        返回:
+            hdc_vector: (HDC_DIM,) 范围为 {-1, 1} 的张量
         """
-        # Convert input to tensor if needed
+        # 如果需要，将输入转换为张量
         if isinstance(lsm_activity, np.ndarray):
             x = torch.from_numpy(lsm_activity.copy()).float().to(self.device)
         else:
             x = lsm_activity.float().to(self.device)
             
-        # Linear Projection
+        # 线性投影
         # y = Wx
         y = torch.mv(self.projection_matrix, x)
         
-        # Binarization (Sign)
-        # Sign(y) -> -1 or 1. (0 becomes 0, but usually practically non-zero float)
-        # We enforce 0 -> 1 to keep strictly binary
+        # 二值化 (Sign)
+        # Sign(y) -> -1 或 1。(0 会变成 0，但在实际中通常是非零浮点数)
+        # 我们强制 0 -> 1 以保持严格二值化
         h = torch.sign(y)
         h[h == 0] = 1.0 
         
@@ -52,9 +51,9 @@ class RandomProjectionAdapter:
 
     def batch_forward(self, lsm_batch):
         """
-        Args:
+        参数:
             lsm_batch: (Batch, N_neurons)
-        Returns:
+        返回:
             hdc_batch: (Batch, HDC_DIM)
         """
         if isinstance(lsm_batch, np.ndarray):

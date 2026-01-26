@@ -4,16 +4,15 @@ from src.config import HDC_DIM
 
 class GlobalWorkspace:
     """
-    Global Workspace (GWT).
-    Central hub for information exchange and conflict monitoring.
-    Task 3.1: The Controller
+    全局工作空间 (GWT)。
+    信息交换和冲突监测的核心枢纽。
     """
     def __init__(self, device='cpu'):
         self.device = device
         self.dim = HDC_DIM
         
-        # Initialize states (None or Zeros)
-        # We start with None to indicate missing info
+        # 初始化状态（None 或零）
+        # 我们以 None 开始，表示信息缺失
         self.current_sense = None
         self.current_pred = None
         self.current_goal = None
@@ -36,39 +35,39 @@ class GlobalWorkspace:
         
     def _hamming_dist(self, v1, v2):
         """
-        Normalized Hamming Distance.
-        Range [0, 1].
-        0 = Identical
-        1 = Opposite
-        0.5 = Orthogonal/Random
-        Formula: (1 - mean(v1*v2)) / 2 for {-1, 1} vectors
+        归一化汉明距离。
+        范围 [0, 1]。
+        0 = 相同
+        1 = 相反
+        0.5 = 正交/随机
+        公式: 对于 {-1, 1} 向量，(1 - mean(v1*v2)) / 2
         """
         if v1 is None or v2 is None:
-            return 1.0 # Max surprise if missing info
+            return 1.0 # 如果信息缺失，则惊喜度最大
             
-        # Cosine/Dot over Norm is equivalent to mean product for binary vectors
+        # 对于二值向量，平均乘积等同于 Cosine/Dot 除以模长
         mean_product = torch.mean(v1 * v2).item()
         
-        # Map mean_product [-1, 1] to distance [1, 0]
+        # 将平均乘积 [-1, 1] 映射到距离 [1, 0]
         # dist = (1 - sim) / 2
         return (1.0 - mean_product) / 2.0
 
     def compute_surprise(self):
         """
-        Calculate Prediction Error (Free Energy proxy).
+        计算预测误差（自由能代理指标）。
         Dist(Sense, Pred)
         """
         return self._hamming_dist(self.current_sense, self.current_pred)
         
     def compute_goal_delta(self):
         """
-        Calculate distance to Goal (Hunger proxy).
+        计算到目标的距离（社交缺失代理指标）。
         Dist(Sense, Goal)
         """
         return self._hamming_dist(self.current_sense, self.current_goal)
         
     def get_status(self):
-        """Return dict of current metrics."""
+        """返回当前指标的字典。"""
         return {
             "surprise": self.compute_surprise(),
             "goal_delta": self.compute_goal_delta(),

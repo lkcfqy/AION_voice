@@ -5,8 +5,7 @@ from src.config import VISDOM_SERVER, VISDOM_PORT, VISDOM_ENV
 
 class AIONDashboard:
     """
-    Real-time visualization dashboard using Visdom.
-    Task 0.2: The Dashboard
+    使用 Visdom 的实时可视化仪表盘。
     """
     def __init__(self):
         print(f"Connecting to Visdom at {VISDOM_SERVER}:{VISDOM_PORT}...")
@@ -18,64 +17,63 @@ class AIONDashboard:
         self._init_plots()
 
     def _init_plots(self):
-        """Initialize the 4 mandatory monitoring panels."""
-        # Clear all existing plots in this environment to prevent duplicates
+        """初始化 4 个强制监控面板。"""
+        # 清除该环境中的所有现有图表以防止重复
         self.vis.close(env=VISDOM_ENV)
 
         
-        # 1. Environment View (RGB Stream)
-        # 1. Environment View (RGB Stream)
+        # 1. 环境视图 (RGB 流)
         self.win_env = self.vis.image(
             np.zeros((3, 56, 56)),
             win="win_env",
-            opts=dict(title="Retina (MiniGrid View)", caption="Raw sensory input")
+            opts=dict(title="耳蜗 (频谱图视图)", caption="原始音频频谱输入")
         )
 
-        # 2. LSM Raster Plot
+        # 2. LSM 光栅图
         self.win_lsm = self.vis.line(
             X=np.array([0]), Y=np.array([0]),
             win="win_lsm",
             opts=dict(
-                title="1. LSM Raster Plot (Spikes)",
-                xlabel="Time",
-                ylabel="Neuron Index",
+                title="1. LSM 光栅图 (脉冲)",
+                xlabel="时间",
+                ylabel="神经元索引",
                 markers=True,
                 markersize=2
             )
         )
 
-        # 3. HDC Similarity
+        # 3. HDC 相似度
         self.win_hdc = self.vis.line(
             X=np.array([0]), Y=np.array([0]),
             win="win_hdc",
             opts=dict(
-                title="2. HDC Similarity",
-                xlabel="Time",
-                ylabel="Cosine Similarity",
+                title="2. HDC 相似度",
+                xlabel="时间",
+                ylabel="余弦相似度",
                 ylim=[0, 1]
             )
         )
 
-        # 4. Energy Landscape (Conceptual / Scalar tracking for now)
+        # 4. 能量地形图（目前用于概念/标量追踪）
         self.win_energy = self.vis.line(
             X=np.array([0]), Y=np.array([0]),
             win="win_energy",
             opts=dict(
-                title="3. Energy Landscape (MHN)",
-                xlabel="Step",
-                ylabel="Energy (-LSE)"
+                title="3. 能量地形图 (MHN)",
+                xlabel="步数",
+                ylabel="能量 (-LSE)"
             )
         )
 
-        # 5. Survival Curve (Loss + Hunger)
+        # 5. 生存曲线（损失 + 饥饿）
         self.win_survival = self.vis.line(
             X=np.array([[0, 0]]), Y=np.array([[0, 0]]),
             win="win_survival",
             opts=dict(
-                title="4. Survival Curve",
-                xlabel="Step",
-                ylabel="Value",
-                legend=["Free Energy (Surprise)", "Hunger"]
+                title="4. 生存曲线",
+                xlabel="步数",
+                ylabel="值",
+                legend=["自由能 (惊喜度)", "孤独感"]
             )
         )
         
@@ -84,32 +82,32 @@ class AIONDashboard:
 
     def update_env_view(self, image):
         """
-        Update the retina view.
-        Args:
-            image: numpy array of shape (H, W, 3) or (3, H, W).
-                   Visdom expects (3, H, W).
+        更新耳蜗视图。
+        参数:
+            image: 形状为 (H, W, 3) 或 (3, H, W) 的 numpy 数组。
+                   Visdom 期望的形状为 (3, H, W)。
         """
-        # Ensure HWC
+        # 确保是 HWC 格式
         if image.shape[0] == 3:
             image = image.transpose(1, 2, 0)
             
-        # Upscale for visibility (Nearest Neighbor)
+        # 为了可见性进行上采样（最近邻插值）
         scale = 6
         image = image.repeat(scale, axis=0).repeat(scale, axis=1)
         
-        # HWC -> CHW for Visdom
+        # 为 Visdom 将 HWC 转换为 CHW
         image = image.transpose(2, 0, 1)
         
-        self.vis.image(image, win=self.win_env, opts=dict(title="Retina (MiniGrid View)"))
+        self.vis.image(image, win=self.win_env, opts=dict(title="耳蜗 (频谱图视图)"))
 
     def update_lsm_raster(self, active_neuron_indices, time_step=None):
         """
-        Update spike raster plot.
-        Args:
-            active_neuron_indices: list/array of indices of neurons that fired this step.
+        更新脉冲光栅图。
+        参数:
+            active_neuron_indices: 在该步激活的神经元索引列表/数组。
         """
-        # Simplification for realtime plotting: just scatter points for current step
-        # Note: Visdom line update with 'append' is efficient enough for low frequency
+        # 实时绘图的简化：仅分散当前步的点
+        # 注意：Visdom 使用 'append' 模式更新 line 对于低频来说足够高效
         t = self.step_count if time_step is None else time_step
         if len(active_neuron_indices) > 0:
             X = np.full(len(active_neuron_indices), t)
@@ -124,11 +122,11 @@ class AIONDashboard:
         self.vis.line(X=np.array([self.step_count]), Y=np.array([energy]), 
                       win=self.win_energy, update='append')
 
-    def update_survival(self, free_energy, hunger):
+    def update_survival(self, free_energy, loneliness):
         self.vis.line(
             X=np.array([[self.step_count, self.step_count]]), 
-            Y=np.array([[free_energy, hunger]]), 
-            win=self.win_survival, 
+            Y=np.array([[free_energy, loneliness]]), 
+            win="win_survival", 
             update='append'
         )
         self.step_count += 1

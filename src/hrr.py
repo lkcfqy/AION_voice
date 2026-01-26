@@ -3,18 +3,18 @@ from src.config import HDC_DIM, SEED
 
 def bind(t1, t2):
     """
-    HDC Binding Operation (XOR).
-    t1, t2: Tensor of {-1, 1}
-    in binary space {0, 1}: xor(a, b)
-    in bipolar space {-1, 1}: mul(a, b)
+    HDC 绑定操作 (XOR)。
+    t1, t2: 范围为 {-1, 1} 的张量
+    在二进制空间 {0, 1} 中: xor(a, b)
+    在双极空间 {-1, 1} 中: mul(a, b)
     """
     return torch.mul(t1, t2)
 
 def bundle(tensor_list):
     """
-    HDC Superposition Operation (Majority Rule).
-    tensor_list: List of tensors or stacked tensor
-    Returns: Sign(Sum(tensors))
+    HDC 叠加操作（多数规则）。
+    tensor_list: 张量列表或堆叠张量
+    返回: Sign(Sum(tensors))
     """
     if isinstance(tensor_list, list):
         stacked = torch.stack(tensor_list, dim=0)
@@ -22,35 +22,30 @@ def bundle(tensor_list):
         stacked = tensor_list
         
     s = torch.sum(stacked, dim=0)
-    # Sign function: >0 -> 1, <0 -> -1, 0 -> 1 (bias to 1)
+    # 符号函数: >0 -> 1, <0 -> -1, 0 -> 1 (偏置向 1)
     res = torch.sign(s)
     res[res == 0] = 1.0
     return res
 
 class HDCWorldModel:
     """
-    Learns transition dynamics T(s, a) -> s' using HRR with Permutation.
+    使用带有置换 (Permutation) 的 HRR 学习转移状态动力学 T(s, a) -> s'。
     
     改进版本：每个动作独立记忆，避免跨动作噪声干扰。
     - 原版: 单一M_sum存储所有(s,a)->s'，噪声累积
     - 新版: M_per_action[action_id]分离存储，预测更清晰
     """
-    def __init__(self, device='cpu', n_actions=6):
+    def __init__(self, device='cpu', n_actions=1):
         self.device = device
         self.dim = HDC_DIM
         self.n_actions = n_actions
         # 每个动作独立记忆
         self.M_per_action = [torch.zeros(self.dim, device=device) for _ in range(n_actions)]
+        # 兼容性设置
         self.counts = [0] * n_actions
         
-        # 兼容旧接口: 仍支持HDC动作向量（但不再用于predict）
-        torch.manual_seed(SEED)
-        self.action_codebooks = [torch.sign(torch.randn(self.dim, device=device)) for _ in range(n_actions)]
-        for cb in self.action_codebooks:
-            cb[cb == 0] = 1.0
-        
     def _permute(self, t, shifts=1):
-        """Cyclic shift for permutation."""
+        """用于置换的循环移位。"""
         return torch.roll(t, shifts=shifts, dims=-1)
         
     def _inverse_permute(self, t, shifts=1):
@@ -58,15 +53,14 @@ class HDCWorldModel:
 
     def learn(self, state, action, next_state):
         """
-        One-shot learning of a transition.
+        转移状态的一步学习。
         
-        Args:
-        Args:
-            state: HDC vector or tensor
-            action: int (action_id 0-5) - Must be integer 
-            next_state: HDC vector or tensor
+        参数:
+            state: HDC 向量或张量
+            action: int (动作 ID) - 必须是整数 
+            next_state: HDC 向量或张量
         """
-        # Strict int requirement
+        # 严格要求整数类型
         action_id = action
         
         s = state.to(self.device).float()
@@ -85,16 +79,15 @@ class HDCWorldModel:
         
     def predict(self, state, action):
         """
-        Predict next state.
+        预测下一状态。
         
-        Args:
-        Args:
-            state: HDC vector
-            action: int (action_id) - Must be integer
-        Returns:
-            pred: 预测的下一状态HDC向量
+        参数:
+            state: HDC 向量
+            action: int (动作 ID) - 必须是整数
+        返回:
+            pred: 预测的下一状态 HDC 向量
         """
-        # Strict int requirement
+        # 严格要求整数类型
         action_id = action
             
         s = state.to(self.device).float()
@@ -119,17 +112,17 @@ class HDCWorldModel:
 
     def load_state_dict(self, state_dict):
         """
-        Load state dictionary (HDC memories).
+        加载状态字典 (HDC 记忆)。
         
-        Args:
-            state_dict: List of tensors [M_action_0, M_action_1, ...]
+        参数:
+            state_dict: 张量列表 [M_action_0, M_action_1, ...]
         """
         if isinstance(state_dict, list):
             self.M_per_action = [t.to(self.device).float() for t in state_dict]
-            # Assumes counts are not strictly needed for prediction if handled,
-            # or we should save counts too. For now reset counts to avoid div/0 if meaningful?
-            # Actually prediction checks counts[id] == 0.
-            # We should assume loaded model has data.
-            self.counts = [100] * self.n_actions # Hack: Indicate learned
+            # 假设预测不需要严格的计数，或者我们也应该保存计数。
+            # 目前重置计数以避免可能的除以零？
+            # 实际上预测会检查 counts[id] == 0。
+            # 我们应该假设加载的模型包含数据。
+            self.counts = [100] * self.n_actions # 技巧: 标记为已学习
         else:
-             print("Warning: Invalid state_dict format for HDCWorldModel")
+             print("警告：HDCWorldModel 的 state_dict 格式无效")

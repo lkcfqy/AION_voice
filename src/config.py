@@ -1,61 +1,41 @@
 """
-AION Project Global Configuration
+AION 项目全局配置
 """
 
-# Environment Settings
-ENV_ID = "MiniGrid-Empty-8x8-v0"
-RENDER_MODE = "rgb_array"
-OBS_SHAPE = (64, 64, 3)  # Audio Spectrogram Shape
+# 感官配置
+OBS_SHAPE = (64, 64, 3)  # 音频频谱图形状 (H, W, Channels)
 
-# PATHS
+# 路径设置
 import os
-import pybullet_data
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Assuming assets are in the root directory for now, based on previous loadURDF calls using relative paths.
-# If they are just in the current running dir (previous behavior), we should point to PROJECT_ROOT.
+# 资产路径（如有音频模板等）
 ASSET_PATH = PROJECT_ROOT 
 
-# Drone Action Space (6-DOF)
-ACTION_NAMES = {
-    0: "Hover",
-    1: "Forward",
-    2: "Rotate_Left",
-    3: "Rotate_Right",
-    4: "Up",
-    5: "Down"
-}
-
-# Visdom Settings
+# Visdom 设置
 VISDOM_SERVER = "http://localhost"
 VISDOM_PORT = 8097
 VISDOM_ENV = "AION_Dashboard"
 
-# Simulation Settings
-SEEDS = 42
-SEED = 42 # Legacy support
+# 仿真设置
+SEED = 42 # 全局随机种子
 
-# City Generation
-CITY_GRID_SIZE = 10     # 10x10 city blocks
-CITY_BLOCK_SIZE = 2.0   # Each block is 2x2 meters (Drone is ~0.5m)
-CITY_DENSITY = 0.3      # 30% of blocks have buildings
-CITY_MAX_HEIGHT = 3.0   # Max building height
-
-# LSM (Liquid State Machine) Settings
+# LSM (液体状态机) 设置
 LSM_N_NEURONS = 400
-LSM_SPARSITY = 0.1     # 10% recurrent connectivity
-LSM_IN_SPARSITY = 0.1  # 10% input connectivity (to handle 12k inputs)
-TARGET_FIRING_RATE = 20 # Hz (Target rate for homeostasis)
-PLASTICITY_RATE = 0.005 # Learning rate (More stable)
-RATE_TAU = 0.05        # Rate estimation time constant (50ms)
-TAU_RC = 0.02          # Membrane time constant (20ms)
-TAU_REF = 0.002        # Refractory period (2ms)
-DT = 0.001             # Simulation step (1ms)
+LSM_SPARSITY = 0.1     # 10% 递归连接
+LSM_IN_SPARSITY = 0.1  # 10% 输入连接（用于处理 12k 输入）
+LSM_STEPS_PER_SAMPLE = 50 # 模拟一个音频切片的迭代次数 (ms)
+TARGET_FIRING_RATE = 20 # Hz (稳态目标频率)
+PLASTICITY_RATE = 0.005 # 学习率（更稳定）
+RATE_TAU = 0.05        # 频率估计时间常数 (50ms)
+TAU_RC = 0.02          # 膜时间常数 (20ms)
+TAU_REF = 0.002        # 迟滞期 (2ms)
+DT = 0.001             # 仿真步长 (1ms)
 
-# HDC Settings
-HDC_DIM = 10000        # Hyperdimensional vector size
-MHN_BETA = 20.0        # Modern Hopfield Network inverse temperature
-MEMORY_THRESHOLD = 0.9 # Similarity threshold for storing new memories (Dynamic Gating)
+# HDC 设置
+HDC_DIM = 10000        # 超维向量维度
+MHN_BETA = 20.0        # 现代 Hopfield 网络逆温度
+MEMORY_THRESHOLD = 0.9 # 存储新记忆的相似度阈值（动态门控）
 
-# Drive Settings
-LAMBDA_HUNGER = 1.0    # Balance between surprise and hunger
-HUNGER_INC = 0.001     # Hunger increment per step
+# 驱动设置 (Social Drive)
+SOCIAL_WEIGHT = 1.0    # 惊喜度与社交渴望之间的平衡
+DECAY_RATE = 0.001     # 每步社交满足感的衰减量

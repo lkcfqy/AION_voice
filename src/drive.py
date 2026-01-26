@@ -2,44 +2,45 @@ import numpy as np
 
 class SocialDrive:
     """
-    Drive System V2: Social Drive.
-    Replaces BiologicalDrive (Drone Battery/Hunger).
+    驱动系统 V2：社交驱动。
+    用于管理智能体的互动欲望。
     
-    Core Variable:
+    核心变量：
     - social_fulfillment (0.0 - 1.0):
-        1.0 = Fully satisfied (Just had a conversation)
-        0.0 = Extremely lonely (Long silence)
+        1.0 = 完全满足（刚刚进行了对话）
+        0.0 = 极其孤独（长期沉默）
         
-     dynamics:
-    - Decay: Decreases over time (Loneliness accumulates).
-    - Restore: Increases when hearing voice or getting response.
+     动态机制：
+    - 衰减 (Decay)：随时间减少（孤独感累积）。
+    - 恢复 (Restore)：听到声音或获得回应时增加。
     """
-    def __init__(self, decay_rate=0.001):
-        self.social_fulfillment = 1.0 # Start happy
-        self.decay_rate = decay_rate
-        self.loneliness_weight = 1.0 # Lambda
+    def __init__(self):
+        from src.config import DECAY_RATE, SOCIAL_WEIGHT
+        self.social_fulfillment = 1.0 # 初始状态为快乐
+        self.decay_rate = DECAY_RATE
+        self.loneliness_weight = SOCIAL_WEIGHT # Lambda 参数
         
     def step(self, heard_voice=False, spoke=False):
         """
-        Update drive state.
-        Args:
-            heard_voice: bool, true if microphone detected speech
-            spoke: bool, true if agent spoke
+        更新驱动状态。
+        参数:
+            heard_voice: bool，如果麦克风检测到语音则为真
+            spoke: bool，如果智能体说话则为真
         """
-        # Decay (Loneliness creeps in)
+        # 衰减（孤独感袭来）
         self.social_fulfillment -= self.decay_rate
         
-        # Restore logic
+        # 恢复逻辑
         if heard_voice:
-            # Hearing someone is very fulfilling
+            # 听到别人的声音是非常令人满足的
             self.social_fulfillment += 0.05
             
         if spoke:
-            # Speaking itself induces some relief (expression), 
-            # but less than hearing (interaction).
+            # 说话本身会带来一些缓解（表达），
+            # 但程度低于听到声音（互动）。
             self.social_fulfillment += 0.01
             
-        # Clip
+        # 限制范围
         self.social_fulfillment = np.clip(self.social_fulfillment, 0.0, 1.0)
         
     @property
@@ -48,7 +49,7 @@ class SocialDrive:
         
     def compute_free_energy(self, surprise):
         """
-        Calculate Total Free Energy.
-        F = Surprise (Prediction Error) + Lambda * Loneliness
+        计算总自由能。
+        F = 惊喜度 (预测误差) + Lambda * 孤独感
         """
         return surprise + self.loneliness_weight * self.loneliness
