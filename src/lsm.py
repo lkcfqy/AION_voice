@@ -17,6 +17,7 @@ class AION_LSM_Network:
     """
     def __init__(self):
         self.current_input = np.zeros(np.prod(OBS_SHAPE))
+        self.cognitive_input_val = np.zeros(LSM_N_NEURONS) # 用于接收来自 HDC 的 Top-down 信号
         
         # （概念上）重写父类中的 input_node 定义
         # 我们只是在 __init__ 内部有效地复制了逻辑
@@ -39,6 +40,13 @@ class AION_LSM_Network:
                 label="音频输入"
             )
 
+            # 认知输入节点 (Top-down Bias)
+            self.cognitive_node = nengo.Node(
+                lambda t: self.cognitive_input_val,
+                size_out=self.n_neurons,
+                label="认知偏置"
+            )
+
             # 储备池 (Reservoir)
             self.reservoir = nengo.Ensemble(
                 n_neurons=self.n_neurons,
@@ -53,9 +61,6 @@ class AION_LSM_Network:
             # 手动创建稀疏矩阵，以避免 Nengo 分布有时出现的形状问题
             # 形状 (n_neurons, input_size)
             # 生成完整的 12k*400 矩阵是非常沉重的 (~5M 个浮点数)。 
-            # 我们应该构建一个 scipy 稀疏矩阵还是索引列表？
-            # 如果后端支持，Nengo 在 Transforms 中处理稀疏矩阵的效果很好。
-            # 但参考后端是 numpy，通常是稠密矩阵数学。 
             # 12M 个浮点数 = ~48MB，对于内存来说完全没问题。
             
             # 使用 Nengo 的稀疏生成器
@@ -73,9 +78,8 @@ class AION_LSM_Network:
             # 生成 Nengo 兼容稀疏矩阵的助手函数
             def generate_sparse_weights(n_rows, n_cols, density, rng):
                 # 使用 scipy.sparse.random
-                # 我们想让非零元素符合标准正态分布吗？
-                # scipy.sparse.random 的值是 0-1 均匀分布。
-                # 我们需要将它们重新塑形为高斯分布。
+                # 使用 scipy.sparse.random
+
                 
                 S = scipy.sparse.random(n_rows, n_cols, density=density, format='csr', random_state=rng)
                 # 将 [0, 1] 映射到高斯分布
@@ -91,6 +95,13 @@ class AION_LSM_Network:
                 self.reservoir.neurons, 
                 transform=self.input_weights.toarray(), 
                 synapse=None
+            )
+
+            # 将认知输入直接连接到神经元（全连接 1:1）
+            nengo.Connection(
+                self.cognitive_node,
+                self.reservoir.neurons,
+                synapse=0.01
             )
 
             # 递归权重 (稀疏)
@@ -139,15 +150,23 @@ class AION_LSM_Network:
         # 赫布追踪 (Hebbian Traces)
         self.last_spikes = np.zeros(self.n_neurons)
 
-    def step(self, spectrogram_input, dopamine=0.0):
+        # 读出层 (Readout Layer) - 用于生成音频频谱
+        # 形状: (n_neurons, input_size) 即 (2000, 64)
+        self.W_out = np.zeros((self.n_neurons, self.input_size))
+
+    def step(self, spectrogram_input, dopamine=0.0, cognitive_bias=None):
         """
         运行模拟的一个步骤。
         spectrogram_input: (Obs Shape) 形状的 numpy 数组
         dopamine: 标量强化信号 (-1.0 到 1.0)
-                  如果 D > 0，强化相关的活动 (LTP - 长时程增强)
-                  如果 D < 0，抑制相关的活动 (LTD - 长时程抑制)
+        cognitive_bias: (N_neurons,) 形状的 numpy 数组，用于 top-down 干扰
         """
         # 1. 更新输入
+        if cognitive_bias is not None:
+            self.cognitive_input_val[:] = cognitive_bias
+        else:
+            self.cognitive_input_val.fill(0)
+
         flat = spectrogram_input.flatten()
         if flat.max() > 1.1: 
             flat = flat / 255.0
@@ -199,7 +218,33 @@ class AION_LSM_Network:
         # Store history
         self.last_spikes = spikes.copy()
         
-        return spikes
+        # 计算预测输出 (Prediction)
+        # prediction = np.dot(spikes, self.W_out)
+        prediction = spikes @ self.W_out
+        
+        return spikes, prediction
+
+    def update_readout(self, all_spikes, all_targets, lambda_reg=1.0):
+        """
+        使用岭回归 (Ridge Regression) 一次性更新读出层权重 W_out。
+        数学原理: W_out = (S^T S + lambda * I)^-1 S^T Y
+        all_spikes: 形状为 (N_samples, N_neurons) 的矩阵
+        all_targets: 形状为 (N_samples, OBS_SHAPE) 的矩阵
+        """
+        print(f"正在更新读出层权重 (样本数: {len(all_spikes)})...")
+        
+        S = all_spikes
+        Y = all_targets
+        
+        # 岭回归公式求解
+        # S.T @ S 形状 (N_neurons, N_neurons)
+        I = np.eye(self.n_neurons)
+        A = S.T @ S + lambda_reg * I
+        B = S.T @ Y
+        
+        # 求解线性方程组 A * W_out = B
+        self.W_out = np.linalg.solve(A, B)
+        print("✅ 读出层权重更新完成。")
 
     def reset(self):
         """无需重新构建即可重置模拟器状态。"""

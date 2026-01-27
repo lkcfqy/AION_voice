@@ -49,6 +49,29 @@ class RandomProjectionAdapter:
         
         return h
 
+    def backward(self, hdc_vector):
+        """
+        将 HDC 向量从高维空间投影回 LSM 神经元电平空间。
+        用于 Top-down 影响。
+        参数:
+            hdc_vector: (HDC_DIM,) 张量或 numpy 数组
+        返回:
+            lsm_bias: (N_neurons,) numpy 数组
+        """
+        if isinstance(hdc_vector, np.ndarray):
+            h = torch.from_numpy(hdc_vector).float().to(self.device)
+        else:
+            h = hdc_vector.float().to(self.device)
+            
+        # 反向投影: x_hat = W^T * h
+        # 形状: (N_neurons, HDC_DIM) * (HDC_DIM, 1) -> (N_neurons, 1)
+        x_hat = torch.mv(self.projection_matrix.T, h)
+        
+        # 归一化/缩放以适应 LSM 的输入电流范围
+        x_hat = x_hat / self.output_dim * 0.1 # 经验缩放
+        
+        return x_hat.cpu().numpy()
+
     def batch_forward(self, lsm_batch):
         """
         参数:
