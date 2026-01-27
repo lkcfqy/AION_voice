@@ -1,4 +1,5 @@
 import numpy as np
+from src.config import DECAY_RATE, SOCIAL_WEIGHT, SOCIAL_RESTORE_VOICE, SOCIAL_RESTORE_SPOKE
 
 class SocialDrive:
     """
@@ -15,7 +16,6 @@ class SocialDrive:
     - 恢复 (Restore)：听到声音或获得回应时增加。
     """
     def __init__(self):
-        from src.config import DECAY_RATE, SOCIAL_WEIGHT
         self.social_fulfillment = 1.0 # 初始状态为快乐
         self.decay_rate = DECAY_RATE
         self.loneliness_weight = SOCIAL_WEIGHT # Lambda 参数
@@ -33,12 +33,12 @@ class SocialDrive:
         # 恢复逻辑
         if heard_voice:
             # 听到别人的声音是非常令人满足的
-            self.social_fulfillment += 0.05
+            self.social_fulfillment += SOCIAL_RESTORE_VOICE
             
         if spoke:
             # 说话本身会带来一些缓解（表达），
             # 但程度低于听到声音（互动）。
-            self.social_fulfillment += 0.01
+            self.social_fulfillment += SOCIAL_RESTORE_SPOKE
             
         # 限制范围
         self.social_fulfillment = np.clip(self.social_fulfillment, 0.0, 1.0)

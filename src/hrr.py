@@ -1,5 +1,5 @@
 import torch
-from src.config import HDC_DIM, SEED
+from src.config import HDC_DIM, SEED, HRR_DEFAULT_COUNTS
 
 def bind(t1, t2):
     """
@@ -123,6 +123,6 @@ class HDCWorldModel:
             # 目前重置计数以避免可能的除以零？
             # 实际上预测会检查 counts[id] == 0。
             # 我们应该假设加载的模型包含数据。
-            self.counts = [100] * self.n_actions # 技巧: 标记为已学习
+            self.counts = [HRR_DEFAULT_COUNTS] * self.n_actions # 技巧: 标记为已学习
         else:
              print("警告：HDCWorldModel 的 state_dict 格式无效")

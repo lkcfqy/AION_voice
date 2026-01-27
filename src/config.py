@@ -52,3 +52,15 @@ DECAY_RATE = 0.001     # 每步社交满足感的衰减量
 # 音频处理设置
 AUDIO_SR = 16000     # 采样率
 HOP_LENGTH = 512     # 帧移
+
+# 学习与适应配置
+LSM_LEARNING_RATE = 1e-4
+ADAPTER_SCALING = 0.1 # 投影缩放因子
+
+# 社交驱动配置
+SOCIAL_RESTORE_VOICE = 0.05 # 听到声音的恢复量
+SOCIAL_RESTORE_SPOKE = 0.01 # 说话的恢复量
+
+# HRR 配置
+HRR_DEFAULT_COUNTS = 100 # 现在的默认计数，直到支持序列化
+

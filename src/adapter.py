@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from src.config import HDC_DIM, LSM_N_NEURONS, SEED
+from src.config import HDC_DIM, LSM_N_NEURONS, SEED, ADAPTER_SCALING
 
 class RandomProjectionAdapter:
     """
@@ -68,7 +68,7 @@ class RandomProjectionAdapter:
         x_hat = torch.mv(self.projection_matrix.T, h)
         
         # 归一化/缩放以适应 LSM 的输入电流范围
-        x_hat = x_hat / self.output_dim * 0.1 # 经验缩放
+        x_hat = x_hat / self.output_dim * ADAPTER_SCALING # 经验缩放
         
         return x_hat.cpu().numpy()
 

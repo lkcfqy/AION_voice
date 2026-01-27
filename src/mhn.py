@@ -134,7 +134,7 @@ class ModernHopfieldNetwork:
             if isinstance(memory_matrix, np.ndarray):
                 memory_matrix = torch.from_numpy(memory_matrix)
             else:
-                print("错误：memory_matrix 必须是张量或 numpy 数组")
+                raise TypeError("错误：memory_matrix 必须是张量或 numpy 数组")
                 return
 
         self.memory_matrix = memory_matrix.float().to(self.device)

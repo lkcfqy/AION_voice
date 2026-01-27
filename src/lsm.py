@@ -3,7 +3,8 @@ import numpy as np
 from src.config import (
     LSM_N_NEURONS, LSM_SPARSITY, LSM_IN_SPARSITY, 
     TARGET_FIRING_RATE, PLASTICITY_RATE, RATE_TAU,
-    TAU_RC, TAU_REF, DT, OBS_SHAPE, SEED
+    TAU_RC, TAU_REF, DT, OBS_SHAPE, SEED,
+    LSM_LEARNING_RATE
 )
 
 # 生产级 LSM，支持动态输入和在线学习
@@ -77,10 +78,6 @@ class AION_LSM_Network:
             
             # 生成 Nengo 兼容稀疏矩阵的助手函数
             def generate_sparse_weights(n_rows, n_cols, density, rng):
-                # 使用 scipy.sparse.random
-                # 使用 scipy.sparse.random
-
-                
                 S = scipy.sparse.random(n_rows, n_cols, density=density, format='csr', random_state=rng)
                 # 将 [0, 1] 映射到高斯分布
                 # 或者直接分配新数据
@@ -187,7 +184,7 @@ class AION_LSM_Network:
         # 这是赫布重合。
         
         if dopamine != 0.0:
-            learning_rate = 1e-4
+            learning_rate = LSM_LEARNING_RATE
             
             # 识别协同激活的神经元
             # 我们使用当前的脉冲作为 Post，上一时刻的脉冲作为 Pre（因果性）
