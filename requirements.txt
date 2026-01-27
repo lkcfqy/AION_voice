@@ -1,7 +1,21 @@
-numpy>=1.20.0
-torch>=1.10.0
-librosa>=0.8.1
-sounddevice>=0.4.0
-nengo>=3.1.0
-scipy>=1.7.0
-visdom>=0.1.8
+# Core Computation (GPU)
+torch>=2.0.0,--index-url https://download.pytorch.org/whl/cu118
+torchvision
+torchaudio
+
+# Audio Processing
+numpy
+librosa>=0.10.0
+sounddevice
+pysoundfile
+cffi
+
+# Visualization & Dashboard
+visdom
+requests
+Pillow
+websocket-client
+
+# Utilities
+scipy
+tqdm

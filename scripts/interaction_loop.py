@@ -7,219 +7,317 @@ import librosa
 import sounddevice as sd
 import queue
 import threading
+import warnings
 
-# Add project root to path
+# Suppress warnings
+warnings.filterwarnings("ignore")
+
+# 添加项目根目录到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.lsm import AION_LSM_Network
 from src.adapter import RandomProjectionAdapter
-from src.gwt import GlobalWorkspace
-from src.drive import SocialDrive
-from src.hrr import HDCWorldModel
+from src.gwt import AttentionGWT
+from src.hrr import ResonatorNetwork
 from src.mhn import ModernHopfieldNetwork
+from src.drive import SocialDrive
 from src.dashboard import AIONDashboard
-from src.config import LSM_N_NEURONS, OBS_SHAPE, AUDIO_SR, HOP_LENGTH, SEED, LSM_STEPS_PER_SAMPLE, WEIGHTS_PATH
+from src.config import LSM_N_NEURONS, OBS_SHAPE, AUDIO_SR, HOP_LENGTH, DEVICE, WEIGHTS_PATH, ADAPTER_SCALING
 
-
-class IntegratedAIONAgent:
-    def __init__(self, device='cpu'):
-        self.device = device
-        print("正在初始化 AION 完整认知集成智能体...")
+class AION_Agent_GPU:
+    def __init__(self):
+        print(f"[!] 初始化 AION GPU 认知架构 (Device: {DEVICE})...")
         
-        # 1. 动力层 (LSM) & 感知适配器
-        # 1. 动力层 (LSM) & 感知适配器
-        self.lsm = AION_LSM_Network()
+        # 1. 核心模块 (Core Modules)
+        self.device = DEVICE
+        self.lsm = AION_LSM_Network(device=DEVICE)
+        self.adapter = RandomProjectionAdapter(device=DEVICE)
+        self.gwt = AttentionGWT(device=DEVICE)
+        self.mhn = ModernHopfieldNetwork(device=DEVICE)
+        self.resonator = ResonatorNetwork(device=DEVICE)
+        self.drive = SocialDrive()
+        
+        # 加载权重
         if os.path.exists(WEIGHTS_PATH):
-            print(f"正在加载 LSM 读出层权重 ({WEIGHTS_PATH})...")
-            self.lsm.W_out = torch.load(WEIGHTS_PATH)
+            print(f"[INFO] 加载权重: {WEIGHTS_PATH}")
+            loaded_tensor = torch.load(WEIGHTS_PATH, map_location=DEVICE)
+            self.lsm.W_out.data = loaded_tensor.to(DEVICE)
         else:
-             print(f"⚠️ 未找到权重文件 {WEIGHTS_PATH}，将使用随机初始化。")
+            print("[WARNING] 未找到预训练权重，使用随机初始化 (将无法正常说话)")
 
-        self.adapter = RandomProjectionAdapter(device=device)
-
-        # 2. 控制层与存储层 (GWT, HDC, MHN, Drive)
-        self.gwt = GlobalWorkspace(device=device)
-        self.drive = SocialDrive()
-        self.wm = HDCWorldModel(n_actions=1, device=device)
-        self.gwt = GlobalWorkspace(device=device)
-        self.drive = SocialDrive()
-        self.wm = HDCWorldModel(n_actions=1, device=device)
-        self.memory = ModernHopfieldNetwork(device=device)
+        # 2. 状态管理
+        self.running = True
+        self.is_sleeping = False
+        self.silence_timer = 0
+        self.last_activity_time = time.time()
         
-        # Dashboard 集成
-        try:
-             self.dashboard = AIONDashboard()
-             self.use_dashboard = True
-             print("✅ Visdom 仪表盘连接成功。")
-        except Exception as e:
-             print(f"⚠️ 无法连接到 Visdom 服务器 ({e})。仪表盘将被禁用。")
-             print("   请运行 'python -m visdom.server' 以启用可视化。")
-             self.use_dashboard = False
-        
-        # 3. 状态同步与多线程
-        self.input_queue = queue.Queue()
+        # 音频缓冲
         self.chunk_size = HOP_LENGTH
-        self.feedback_factor = 0.05   # 大幅调低反馈，由 0.3 降至 0.05 以防止震荡
-        self.last_prediction = np.zeros(OBS_SHAPE)
-        self.volume_factor = 0.5      # 全局音量缩放
-        self.alpha_smooth = 0.7       # 频谱平滑系数
-        self.prev_audio_tail = np.zeros(self.chunk_size) # 用于平滑衔接
+        self.n_fft = self.chunk_size * 2
+        self.in_buffer = np.zeros(self.n_fft)
         
-        # 4. 预计算音频合成所需的 Mel 矩阵
-        # 用于将 Mel 转换回 STFT 幅度
-        self.mel_basis = librosa.filters.mel(sr=AUDIO_SR, n_fft=self.chunk_size*2, n_mels=OBS_SHAPE)
+        # 音频处理矩阵 (CPU -> GPU 在循环中处理)
+        self.mel_basis = librosa.filters.mel(sr=AUDIO_SR, n_fft=self.n_fft, n_mels=OBS_SHAPE)
         self.mel_basis_inv = np.linalg.pinv(self.mel_basis)
         
-        # 共享状态（用于跨线程通讯）
-        self.shared_state = {
-            'cognitive_bias': np.zeros(LSM_N_NEURONS),
-            'last_spikes': np.zeros(LSM_N_NEURONS),
-            'dopamine': 0.0,
-            'running': True
-        }
+        # 睡眠设置
+        self.SLEEP_THRESHOLD = 5.0 # 秒 (无声多长时间后入睡) - 已修改为5秒以便测试
         
-    def audio_callback(self, indata, outdata, frames, time, status):
-        """快速物理环 (32ms 延迟)"""
-        # A. 感知输入
-        y = indata.flatten()
-        mel = librosa.feature.melspectrogram(y=y, sr=AUDIO_SR, n_mels=OBS_SHAPE, hop_length=self.chunk_size, n_fft=self.chunk_size*2)
-        # 转为对数分贝，使用固定参考值 1.0 (必须与训练一致)
+        # 仪表盘
+        try:
+            self.dashboard = AIONDashboard()
+            self.use_dashboard = True
+        except:
+            print("[WARNING] Dashboard 未连接")
+            self.use_dashboard = False
+
+        # 从数据集预加载记忆
+        self.preload_memories()
+            
+    def preload_memories(self):
+        """从数据集中加载先天记忆"""
+        import glob
+        import random
+        
+        print("📥 正在植入先天记忆 (从训练集)...")
+        # 使用绝对路径确保能找到文件
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dataset_pattern = os.path.join(project_root, "datasets", "**", "*.wav")
+        print(f"   Searching in: {dataset_pattern}")
+        
+        wav_files = glob.glob(dataset_pattern, recursive=True)
+        print(f"   Found {len(wav_files)} files.")
+        
+        if not wav_files:
+            print("[WARNING] 未找到数据集文件，大脑将以空白状态启动。")
+            return
+            
+        # 随机选择 5 个文件
+        count = 5
+        selected_files = random.sample(wav_files, min(len(wav_files), count))
+        
+        for wav_path in selected_files:
+            try:
+                # 快速处理流程 (不播放，只记忆)
+                y, sr = librosa.load(wav_path, sr=AUDIO_SR)
+                # 截取一小段 (1秒)
+                if len(y) > AUDIO_SR:
+                    y = y[:AUDIO_SR]
+                
+                # 填充以防过短
+                if len(y) < self.n_fft:
+                    y = np.pad(y, (0, self.n_fft - len(y)))
+                    
+                mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=OBS_SHAPE, hop_length=self.chunk_size, n_fft=self.n_fft)
+                mel_db = librosa.power_to_db(mel, ref=1.0)
+                if mel_db.shape[1] > 0:
+                    mel_vec = (mel_db[:, -1] + 80.0) / 80.0 # 取最后一帧作为特征
+                    mel_vec = np.clip(mel_vec, 0, 1)
+                    
+                    # 转为 Tensor
+                    mel_tensor = torch.tensor(mel_vec, dtype=torch.float32, device=self.device)
+                    
+                    # 激活 LSM 获取脉冲模式
+                    self.lsm.reset()
+                    # 预热几步
+                    for _ in range(5):
+                        spikes = self.lsm.forward(mel_tensor)
+                        
+                    # 形成概念并存储
+                    concept = self.adapter.forward(spikes.flatten())
+                    added = self.mhn.add_memory(concept)
+                    if added:
+                        print(f"   Mapped: {os.path.basename(wav_path)}")
+                
+            except Exception as e:
+                print(f"   Skipped {wav_path}: {e}")
+                
+        print(f"[BRAIN] 成功植入 {self.mhn.memory_count} 条先天记忆！")
+
+    def audio_callback(self, indata, outdata, frames, time_info, status):
+        """实时音频回调 (运行在独立线程)"""
+        if self.is_sleeping:
+            # 睡眠模式：不处理外界输入，只播放内部生成的“梦话”
+            # 这里我们通过 check_dream_queue 或类似机制获取输出
+            # 简单起见，睡眠时的输出由 cognitive_loop 直接写入 sounddevice 的 OutputStream?
+            # 或者在这里填零，由主线程控制播放。
+            outdata.fill(0)
+            return
+
+        # 1. 输入处理 (Input Processing)
+        new_data = indata.flatten()
+        self.in_buffer = np.roll(self.in_buffer, -self.chunk_size)
+        self.in_buffer[-self.chunk_size:] = new_data
+        
+        # 麦克风增益 (Pre-amp Gain)
+        gain = 100.0
+        buffer_boosted = self.in_buffer * gain
+        input_rms = np.sqrt(np.mean(buffer_boosted**2))
+        
+        # 活动检测 (降低阈值)
+        if input_rms > 0.02:
+            self.last_activity_time = time.time()
+        
+        # 计算 Mel 频谱 (CPU)
+        mel = librosa.feature.melspectrogram(y=buffer_boosted, sr=AUDIO_SR, n_mels=OBS_SHAPE, hop_length=self.chunk_size, n_fft=self.n_fft)
         mel_db = librosa.power_to_db(mel, ref=1.0)
-        # 确保形状为 (OBS_SHAPE,)，取所有时间帧的平均值
-        mel_vec = np.mean(mel_db, axis=1)
-        # 归一化 (使用与训练完全一致的 [-80, 0] 映射)
-        mel_vec = (mel_vec + 80) / 80.0
-        mel_vec = (mel_vec + 80) / 80.0
+        mel_vec = (mel_db[:, -1] + 80.0) / 80.0
         mel_vec = np.clip(mel_vec, 0, 1)
-
-        # 实时更新耳蜗视图 (如果启用 Dashboard)
-        if self.use_dashboard and hasattr(self, 'dashboard'):
-             # 发送这一帧的 Mel 频谱
-             # 为了显示好看，将其从 (OBS_SHAPE,) 扩展为 (OBS_SHAPE, 1, 1) 或类似的图像格式
-             # Dashboard 期望 (H, W, 3) 
-             # 简单的可视化：将向量扩展为条形图
-             pass # 在 cognitive loop 更新可能更好，或者在这里更新 fast update
-             # 由于 audio callback 频率很高，我们可能需要降采样
-             # 暂时只在 dashboard 类中做频谱图累积？
-             # Dashboard 的 update_env_view 期望图像。
-             # 我们可以简单地把 mel vector 构造成一个热力图条
-             
-             # 构造一个 图像 (OBS_SHAPE, 10, 3) 用伪彩色
-             # 简便起见，只在 cognitive loop 更新慢速信息。
-             pass
-
-        # 增加噪声门 (Noise Gate): 如果输入信号太弱，直接置零
-        if np.mean(mel_vec) < 0.1: # 稍微调高一点门限
+        
+        # 噪声门 (Noise Gate) (降低阈值)
+        if np.max(mel_vec) < 0.05:
             mel_vec.fill(0)
-
-        # B. 注入与生成 (接受认知偏置和多巴胺调节)
-        bias = self.shared_state['cognitive_bias']
-        dopamine = self.shared_state['dopamine']
-        
-        spikes, next_mel = self.lsm.step(mel_vec + (self.feedback_factor * self.last_prediction), 
-                                         dopamine=dopamine, 
-                                         cognitive_bias=bias)
-                                         
-        # 增加平滑：避免预测值跳变剧烈导致滋滋声
-        self.last_prediction = self.alpha_smooth * self.last_prediction + (1 - self.alpha_smooth) * next_mel
-        self.shared_state['last_spikes'] = spikes # 更新脉冲状态供逻辑环采样
-
-        # C. 播放输出
-        # 将 Mel 归一化 DB 转回近似幅度 (限制在 0-1 范围内防止爆炸)
-        next_mel_safe = np.clip(next_mel, 0, 1)
-        mel_db = next_mel_safe * 80.0 - 80.0
-        mel_power = librosa.db_to_power(mel_db)
-        
-        # 手动转回 STFT 幅度 (Linear)
-        stft_power = self.mel_basis_inv @ mel_power
-        stft_mag = np.sqrt(np.maximum(stft_power, 0))
-        
-        # 使用 ISTFT 进行实时合成 (零位由于无相位信息)
-        audio_out = librosa.istft(stft_mag.reshape(-1, 1), 
-                                 hop_length=self.chunk_size, 
-                                 win_length=self.chunk_size*2,
-                                 length=self.chunk_size)
-        
-        # 写入输出流，使用 tanh 进行软剪切并应用音量因子
-        audio_final = np.tanh(audio_out) * self.volume_factor
-        outdata[:] = audio_final.reshape(-1, 1)
-
-    def cognitive_loop(self):
-        """慢速逻辑环 (约 100ms 周期)"""
-        print("🧠 认知逻辑环已启动。")
-        while self.shared_state['running']:
-            # 1. 采样 LSM 脉冲并投影到 HDC 空间
-            spikes = self.shared_state['last_spikes']
-            if np.any(spikes):
-                # 将脉冲转换为 HDC 概念
-                concept = self.adapter.forward(spikes)
-                self.gwt.update_sense(concept)
-                
-                # 2. 情节记忆检索与能量计算 (FEP 相关)
-                energy = self.memory.compute_energy(concept)
-                self.memory.add_memory(concept)
-                
-                # 3. 目标驱动与惊讶度计算
-                surprise = self.gwt.compute_surprise()
-                self.drive.step(heard_voice=(np.mean(spikes) > 0.1))
-                
-                # 4. 生成意图 (Top-down Intent)
-                # 预测下一刻的高维概念
-                intent_concept = self.wm.predict(concept, 0)
-                self.gwt.update_pred(intent_concept)
-                
-                # 5. 反向投影：将“意图”转化为 LSM 的物理偏置
-                bias = self.adapter.backward(intent_concept)
-                self.shared_state['cognitive_bias'] = bias
-                
-                # 6. 多巴胺调节 (基于惊喜度和孤独感)
-                # 产生的多巴胺会影响 LSM 的 3-因子学习
-                # 6. 多巴胺调节 (基于惊喜度和孤独感)
-                # 产生的多巴胺会影响 LSM 的 3-因子学习
-                self.shared_state['dopamine'] = 0.1 if surprise < 0.2 else -0.05
             
-            # 7. 更新 Dashboard
-            if self.use_dashboard:
-                 # 耳蜗视图 (当前输入) -> 需要从 callback 获取一份副本
-                 # 为简单起见，我们暂时只更新逻辑状态
-                 
-                 # LSM 光栅图
-                 active_neurons = np.where(spikes > 0)[0]
-                 self.dashboard.update_lsm_raster(active_neurons)
-                 
-                 # HDC 相似度 (Surprise 的反面或 Goal Delta)
-                 self.dashboard.update_hdc_similarity(1.0 - surprise) # 相似度越高，惊喜度越低
-                 
-                 # 能量 / 驱动
-                 free_energy = self.drive.compute_free_energy(surprise)
-                 self.dashboard.update_energy(free_energy)
-                 self.dashboard.update_survival(free_energy, self.drive.loneliness)
+        # 2. 传输到 GPU
+        mel_tensor = torch.tensor(mel_vec, dtype=torch.float32, device=self.device)
+        
+        # 3. LSM 模拟步 (GPU)
+        # 注入 自上而下 (Top-down) 偏置 (来自 GWT 广播)
+        bias = self.gwt.workspace_content # (1, D)
+        # Adapter 反向传播: HDC -> Neurons
+        bias_current = None
+        if bias is not None:
+             bias_current = self.adapter.backward(bias).flatten() # numpy
+             bias_current = torch.tensor(bias_current, device=self.device)
+             
+        # 修复逻辑错误: 输入信号 (Mel) 和 偏置电流 (Neuron Space) 维度不同，不能直接相加。
+        # 我们使用 lsm.forward 的 external_current 参数注入偏置。
+        scaled_bias = 0.01 * bias_current if bias_current is not None else None
+        spikes = self.lsm.forward(mel_tensor, external_current=scaled_bias)
+        spikes = spikes.flatten() # (1, N) -> (N,)
+        
+        # 读出预测 (Readout)
+        prediction = spikes @ self.lsm.W_out # (N,) @ (N, Out) -> (Out,)
+        
+        # 4. 神经音频合成 (GPU -> CPU)
+        pred_np = prediction.detach().cpu().numpy().flatten()
+        pred_np = np.clip(pred_np, 0, 1)
+        
+        # 信号重建 (Mel -> Linear -> Waveform)
+        # Mel -> Linear
+        mel_db_out = pred_np * 80.0 - 80.0
+        mel_p = librosa.db_to_power(mel_db_out)
+        stft_p = self.mel_basis_inv @ mel_p
+        stft_mag = np.sqrt(np.maximum(stft_p, 0))
+        
+        # 逆傅里叶变换 (IFFT)
+        wav_chunk = np.fft.irfft(stft_mag, n=self.n_fft)
+        windowed = wav_chunk * np.hanning(self.n_fft)
+        # 简化版 OLA: 直接输出切片中心部分以降低延迟
+        out_chunk = windowed[:self.chunk_size] 
+        
+        outdata[:] = np.tanh(out_chunk).reshape(-1, 1) * 1.0
+
+        # 更新全局状态供认知循环使用
+        self.current_spikes = spikes
+
+    def cognitive_cycle(self):
+        """慢速认知循环 (10Hz)"""
+        while self.running:
+            # 睡眠检查
+            if time.time() - self.last_activity_time > self.SLEEP_THRESHOLD:
+                if not self.is_sleeping:
+                    print("\n[SLEEP] 环境安静，进入在线睡眠巩固模式 (做梦)...")
+                    self.is_sleeping = True
+                    self.enter_dream_state()
+            else:
+                 if self.is_sleeping:
+                     print("\n[WAKE] 检测到活动，唤醒中...")
+                     self.is_sleeping = False
             
+            if not self.is_sleeping:
+                # 正常认知处理
+                if hasattr(self, 'current_spikes'):
+                    spikes = self.current_spikes # (N,) Tensor
+                    
+                    # 1. 感知: LSM -> HDC
+                    concept = self.adapter.forward(spikes) # (D,)
+                    
+                    # 2. 注意力广播
+                    # 查询 = 驱动 (孤独/需求) - 暂未实现 Drive 向量化，先用 Concept
+                    # 广播: 这里的输入源可以是 视觉, 音频, 记忆
+                    # 目前只有 音频 (Concept)
+                    broadcast = self.gwt.broadcast(query=concept, input_modules={'audio': concept})
+                    
+                    # 3. 记忆
+                    self.mhn.add_memory(broadcast)
+                    
+                    # 4. 仪表盘
+                    if self.use_dashboard:
+                        self.dashboard.update_lsm_raster(torch.where(spikes > 0)[0].cpu().numpy())
+                        
             time.sleep(0.1)
 
+    def enter_dream_state(self):
+        """做梦模式：随机回放记忆并生成声音"""
+        while self.is_sleeping and self.running:
+            # 检测是否被唤醒
+            if time.time() - self.last_activity_time < 0.5:
+                break
+                
+            if self.mhn.memory_count > 0:
+                # 1. 回忆 (随机采样)
+                idx = np.random.randint(0, self.mhn.memory_count)
+                memory = self.mhn.memory_matrix[idx] # (D,)
+                
+                # 2. 想象 (Top-down)
+                # HDC -> LSM Neurons
+                bias = self.adapter.backward(memory) # (N,) numpy
+                bias_tensor = torch.tensor(bias, device=self.device)
+                
+                # 3. 激活 LSM (无输入，只有 bias)
+                # 模拟一段 "梦境" (例如 100ms)
+                print(f"\r[DREAM] 正在回放记忆片段 #{idx}...", end="")
+                
+                generated_audio = []
+                # 重置 LSM 内部状态以获得清晰的梦境
+                self.lsm.reset()
+                
+                for _ in range(10): # 10 帧
+                    spikes = self.lsm.forward(bias_tensor * 2.0) # 强刺激
+                    pred = spikes @ self.lsm.W_out
+                    
+                    # 合成音频
+                    p = pred.detach().cpu().numpy()
+                    p = np.clip(p, 0, 1)
+                    # ... (简单的合成，类似于回调函数)
+                    mel_p = librosa.db_to_power(p * 80 - 80)
+                    wav = np.fft.irfft(np.sqrt(np.maximum(self.mel_basis_inv @ mel_p, 0)), n=self.n_fft)
+                    generated_audio.append(wav[:self.chunk_size])
+                    
+                # 播放梦境声音
+                full_dream = np.concatenate(generated_audio)
+                sd.play(np.tanh(full_dream) * 0.5, AUDIO_SR)
+                sd.wait()
+                
+            else:
+                print("\r[BRAIN] 记忆库为空！请先对着麦克风说话，让我积累一些素材...", end="")
+                time.sleep(1.0)
+                
+            time.sleep(1.0) # 梦境间隔
+
     def run(self):
-        print("\n=== AION 完整认知集成交互已启动 ===")
-        print("架构：GWT + HDC + MHN + FEP + Generative LSM")
-        print("按 Ctrl+C 停止。")
-        
-        # 启动认知线程
-        cog_thread = threading.Thread(target=self.cognitive_loop)
+        cog_thread = threading.Thread(target=self.cognitive_cycle)
         cog_thread.daemon = True
         cog_thread.start()
         
-        try:
-            with sd.Stream(samplerate=AUDIO_SR,
-                           blocksize=self.chunk_size,
-                           channels=1,
-                           callback=self.audio_callback):
-                while True:
-                    time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("\n正在停止...")
-            self.shared_state['running'] = False
-            cog_thread.join(timeout=1.0)
-            print("已停止。")
+        print("\n" + "="*50)
+        print("[MIC] AION 语音交互系统已启动")
+        print("[TIP] 使用指南:")
+        print("1. 对着麦克风说话 -> 它会学习并尝试跟随你的声音。")
+        print("2. 保持安静 5 秒 -> 它会进入梦境，回放刚才学到的声音片段。")
+        print("[WARNING] 注意：启动时记忆是空的，你必须先说话！")
+        print("="*50 + "\n")
+        
+        print("[MIC] 麦克风监听中...")
+        with sd.Stream(samplerate=AUDIO_SR, blocksize=self.chunk_size, channels=1, callback=self.audio_callback):
+            while self.running:
+                try:
+                    time.sleep(1.0)
+                except KeyboardInterrupt:
+                    self.running = False
+                    print("\n[EXIT] 正在停止...")
 
 if __name__ == "__main__":
-    agent = IntegratedAIONAgent()
+    agent = AION_Agent_GPU()
     agent.run()

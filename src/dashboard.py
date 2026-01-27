@@ -12,7 +12,7 @@ class AIONDashboard:
         self.vis = visdom.Visdom(server=VISDOM_SERVER, port=VISDOM_PORT, env=VISDOM_ENV)
         
         if not self.vis.check_connection():
-            raise ConnectionError("Could not connect to Visdom server! Please run 'python -m visdom.server'")
+            raise ConnectionError("无法连接到 Visdom 服务器! 请运行 'python -m visdom.server'")
 
         self._init_plots()
 

@@ -1,258 +1,138 @@
-import nengo
+import torch
+import torch.nn as nn
 import numpy as np
-from src.config import (
-    LSM_N_NEURONS, LSM_SPARSITY, LSM_IN_SPARSITY, 
-    TARGET_FIRING_RATE, PLASTICITY_RATE, RATE_TAU,
-    TAU_RC, TAU_REF, DT, OBS_SHAPE, SEED,
-    LSM_LEARNING_RATE
-)
+from src.config import LSM_N_NEURONS, OBS_SHAPE, TAU_RC, TAU_REF, DT, DEVICE, SEED
 
-# 生产级 LSM，支持动态输入和在线学习
-class AION_LSM_Network:
+class AION_LSM_Network(nn.Module):
     """
-    生产级液体状态机 (LSM)，具有：
-    - 动态输入回调（基于 lambda 的 Node）
-    - 三因子赫布学习 (Hebbian learning)（多巴胺调节）
-    - 通过 scipy.sparse 生成稀疏权重
-    - 支持运行时权重修改
+    基于 PyTorch 的液体状态机 (Liquid State Machine)
+    使用 Leaky Integrate-and-Fire (LIF) 神经元模型。
+    支持 GPU 加速。
     """
-    def __init__(self):
-        self.current_input = np.zeros(np.prod(OBS_SHAPE))
-        self.cognitive_input_val = np.zeros(LSM_N_NEURONS) # 用于接收来自 HDC 的 Top-down 信号
+    def __init__(self, n_neurons=LSM_N_NEURONS, n_in=OBS_SHAPE, sparsity=0.1, device=DEVICE):
+        super().__init__()
+        self.n = n_neurons
+        self.n_in = n_in
+        self.device = device
         
-        # （概念上）重写父类中的 input_node 定义
-        # 我们只是在 __init__ 内部有效地复制了逻辑
-        
+        # 神经元参数 (Tensor)
+        self.tau_rc = TAU_RC
+        self.tau_ref = TAU_REF
         self.dt = DT
-        self.n_neurons = LSM_N_NEURONS
-        self.input_size = np.prod(OBS_SHAPE)
         
-        self.bias_correction = np.zeros(self.n_neurons)
-        self.filtered_rates = np.zeros(self.n_neurons)
-        self.rate_tau = RATE_TAU
-
-        self.model = nengo.Network(label="AION_LSM", seed=SEED)
+        # 衰减因子
+        self.decay = np.exp(-self.dt / self.tau_rc)
         
-        with self.model:
-            # 动态输入节点
-            self.input_node = nengo.Node(
-                lambda t: self.current_input, 
-                size_out=self.input_size, 
-                label="音频输入"
-            )
-
-            # 认知输入节点 (Top-down Bias)
-            self.cognitive_node = nengo.Node(
-                lambda t: self.cognitive_input_val,
-                size_out=self.n_neurons,
-                label="认知偏置"
-            )
-
-            # 储备池 (Reservoir)
-            self.reservoir = nengo.Ensemble(
-                n_neurons=self.n_neurons,
-                dimensions=1, 
-                neuron_type=nengo.LIF(tau_rc=TAU_RC, tau_ref=TAU_REF),
-                seed=SEED
-            )
-
-            # 输入权重 (稀疏)
-            # 注意：如果需要可重复性，我们必须确保 RNG (随机数生成器) 的一致性
-            rng = np.random.RandomState(SEED)
-            # 手动创建稀疏矩阵，以避免 Nengo 分布有时出现的形状问题
-            # 形状 (n_neurons, input_size)
-            # 生成完整的 12k*400 矩阵是非常沉重的 (~5M 个浮点数)。 
-            # 12M 个浮点数 = ~48MB，对于内存来说完全没问题。
-            
-            # 使用 Nengo 的稀疏生成器
-            import scipy.sparse
-
-            # ... (在 __init__ 内部)
-            # 输入权重 (稀疏)
-            print("正在生成权重...")
-
-            # 使用 scipy 生成稀疏权重
-            # 密度 = 1.0 - LSM_IN_SPARSITY
-            # 我们需要的连通性 = LSM_IN_SPARSITY (例如 0.1)
-            # scipy.sparse.random 使用 density (0.0-1.0)
-            
-            # 生成 Nengo 兼容稀疏矩阵的助手函数
-            def generate_sparse_weights(n_rows, n_cols, density, rng):
-                S = scipy.sparse.random(n_rows, n_cols, density=density, format='csr', random_state=rng)
-                # 将 [0, 1] 映射到高斯分布
-                # 或者直接分配新数据
-                if S.nnz > 0:
-                   S.data = rng.standard_normal(S.nnz) * 0.005 # 缩放 0.005 (优化过的起始值)
-                return S
-
-            self.input_weights = generate_sparse_weights(self.n_neurons, self.input_size, LSM_IN_SPARSITY, rng)
-            
-            nengo.Connection(
-                self.input_node, 
-                self.reservoir.neurons, 
-                transform=self.input_weights.toarray(), 
-                synapse=None
-            )
-
-            # 将认知输入直接连接到神经元（全连接 1:1）
-            nengo.Connection(
-                self.cognitive_node,
-                self.reservoir.neurons,
-                synapse=0.01
-            )
-
-            # 递归权重 (稀疏)
-            recurrent_weights = generate_sparse_weights(self.n_neurons, self.n_neurons, LSM_SPARSITY, rng)
-            
-            self.recurrent_conn = nengo.Connection(
-                self.reservoir.neurons, 
-                self.reservoir.neurons,
-                transform=recurrent_weights.toarray(),
-                synapse=0.01
-            )
-
-            # 稳态 (Homeostasis)
-            def homeostasis_func(t, x):
-                spikes = x
-                alpha = self.dt / self.rate_tau
-                inst_rate = spikes / self.dt
-                self.filtered_rates += alpha * (inst_rate - self.filtered_rates)
-                
-                error = self.filtered_rates - TARGET_FIRING_RATE
-                self.bias_correction -= PLASTICITY_RATE * error * self.dt
-                
-                return self.bias_correction
-
-            self.homeostasis_node = nengo.Node(
-                homeostasis_func,
-                size_in=self.n_neurons,
-                size_out=self.n_neurons,
-                label="稳态调节"
-            )
-            
-            nengo.Connection(self.reservoir.neurons, self.homeostasis_node, synapse=None)
-            nengo.Connection(self.homeostasis_node, self.reservoir.neurons, synapse=0.01) # 叠加电流
-
-            # 脉冲探针
-            # 我们启用它以可视化光栅图
-            self.spike_probe = nengo.Probe(self.reservoir.neurons)
-            
-        print("正在构建模拟器...")
-        self.sim = nengo.Simulator(self.model, dt=self.dt, progress_bar=False)
+        torch.manual_seed(SEED)
         
-        # 在模拟器中定位权重信号
-        # 这样我们就可以在运行时修改权重
-        self.weight_sig = self.sim.model.sig[self.recurrent_conn]['weights']
+        # 1. 初始化权重 (保持 Chaos Edge, 谱半径 ~ 1.0)
+        # 输入权重 (Sparse)
+        self.W_in = self._init_sparse_weights(n_in, n_neurons, sparsity * 2, gain=5.0) # 增强输入增益
         
-        # 赫布追踪 (Hebbian Traces)
-        self.last_spikes = np.zeros(self.n_neurons)
+        # 递归权重 (Sparse, 谱半径调整)
+        self.W_rec = self._init_sparse_weights(n_neurons, n_neurons, sparsity, gain=1.2) # 略微混沌
+        
+        # 读出权重 (可训练) - 初始化为零
+        self.W_out = nn.Parameter(torch.zeros(n_neurons, n_in, device=device))
+        
+        # 2. 神经元状态
+        self.reset()
+        
+        self.to(device)
+        print(f"[LSM] LSM 初始化完成: {n_neurons} 神经元 (Device: {device})")
 
-        # 读出层 (Readout Layer) - 用于生成音频频谱
-        # 形状: (n_neurons, input_size) 即 (2000, 64)
-        self.W_out = np.zeros((self.n_neurons, self.input_size))
-
-    def step(self, spectrogram_input, dopamine=0.0, cognitive_bias=None):
-        """
-        运行模拟的一个步骤。
-        spectrogram_input: (Obs Shape) 形状的 numpy 数组
-        dopamine: 标量强化信号 (-1.0 到 1.0)
-        cognitive_bias: (N_neurons,) 形状的 numpy 数组，用于 top-down 干扰
-        """
-        # 1. 更新输入
-        if cognitive_bias is not None:
-            self.cognitive_input_val[:] = cognitive_bias
-        else:
-            self.cognitive_input_val.fill(0)
-
-        flat = spectrogram_input.flatten()
-        if flat.max() > 1.1: 
-            flat = flat / 255.0
-            
-        self.current_input[:] = flat 
-        
-        # 2. 模拟器前进
-        self.sim.step()
-        
-        # 3. 获取脉冲
-        spikes = self.sim.data[self.spike_probe][-1]
-        
-        # 4. 应用三因子学习规则（权重更新）
-        # dW = eta * D * (Post * Pre)
-        # Nengo 默认权重是 (Post, Pre)
-        # 我们使用一个简单的类 STDP 规则（基于频率/脉冲事件）？
-        # 由于这些是脉冲（0 或 1/dt），只有当两者都触发时，乘积才为 1。
-        # 这是赫布重合。
-        
-        if dopamine != 0.0:
-            learning_rate = LSM_LEARNING_RATE
-            
-            # 识别协同激活的神经元
-            # 我们使用当前的脉冲作为 Post，上一时刻的脉冲作为 Pre（因果性）
-            # 或者只是瞬时重合。
-            # 为了在这个基于时间步的模型中简化，我们先使用瞬时的，
-            # 或者更好的方式是：Pre=self.last_spikes, Post=spikes
-            
-            pre = self.last_spikes
-            post = spikes
-            
-            # 外积 -> (N_post, N_pre)
-            # 仅当有活动时才更新
-            if np.any(pre) and np.any(post):
-                dW = learning_rate * dopamine * np.outer(post, pre)
-                
-                # 将更新应用到模拟器信号
-                # 注意：这是对 Nengo 的内部访问
-                # 如果需要，强制设置为可写
-                weights = self.sim.signals[self.weight_sig]
-                if not weights.flags.writeable:
-                    weights.setflags(write=1)
-                
-                weights += dW
-                
-                # 限制权重？也许可以防止权重爆炸
-                # self.sim.signals[self.weight_sig] = np.clip(self.sim.signals[self.weight_sig], -1.0, 1.0)
-        
-        # Store history
-        self.last_spikes = spikes.copy()
-        
-        # 计算预测输出 (Prediction)
-        # prediction = np.dot(spikes, self.W_out)
-        prediction = spikes @ self.W_out
-        
-        return spikes, prediction
-
-    def update_readout(self, all_spikes, all_targets, lambda_reg=1.0):
-        """
-        使用岭回归 (Ridge Regression) 一次性更新读出层权重 W_out。
-        数学原理: W_out = (S^T S + lambda * I)^-1 S^T Y
-        all_spikes: 形状为 (N_samples, N_neurons) 的矩阵
-        all_targets: 形状为 (N_samples, OBS_SHAPE) 的矩阵
-        """
-        print(f"正在更新读出层权重 (样本数: {len(all_spikes)})...")
-        
-        S = all_spikes
-        Y = all_targets
-        
-        # 岭回归公式求解
-        # S.T @ S 形状 (N_neurons, N_neurons)
-        I = np.eye(self.n_neurons)
-        A = S.T @ S + lambda_reg * I
-        B = S.T @ Y
-        
-        # 求解线性方程组 A * W_out = B
-        self.W_out = np.linalg.solve(A, B)
-        print("✅ 读出层权重更新完成。")
+    def _init_sparse_weights(self, n_in, n_out, sparsity, gain=1.0):
+        """生成稀疏连接矩阵"""
+        # 使用 Kaiming Uniform 但稀疏化
+        weights = torch.randn(n_in, n_out, device=self.device) * gain / np.sqrt(n_in)
+        mask = torch.rand(n_in, n_out, device=self.device) < sparsity
+        return weights * mask.float()
 
     def reset(self):
-        """无需重新构建即可重置模拟器状态。"""
-        self.sim.reset()
-        self.last_spikes = np.zeros(self.n_neurons)
-        # 如果需要，重新定位权重信号（通常保持不变）
-        # 注意：权重属于信号状态的一部分，但递归权重通常在 sim.signals 中修改。
-        # 如果我们想在重置时保留学习到的权重，sim.reset() 是好的，因为它会重置神经元状态
-        # 但如果全局信号值被修改了，不一定会重置它们。
-        # 实际上，sim.reset() 会将所有信号重置为它们的初始值。
-        # 如果我们想保留权重，可能需要自定义重置函数。
-        # 然而，对于 Broca 训练，我们目前并不更新 LSM 中的权重。
-        # 所以 sim.reset() 是完美的。
+        """重置神经元状态 (电压, 不应期)"""
+        self.v = torch.zeros(self.n, device=self.device) # 膜电位
+        self.ref = torch.zeros(self.n, device=self.device) # 不应期计时器
+        self.spikes = torch.zeros(self.n, device=self.device) # 脉冲输出
 
+    def forward(self, input_signal, external_current=None):
+        """
+        一步仿真
+        input_signal: (Batch, Input_Dim) 或 (Input_Dim)
+        external_current: (Optional) 外部注入电流 (Batch, N_Neurons)
+        """
+        if input_signal.dim() == 1:
+            input_signal = input_signal.unsqueeze(0) # (1, In)
+            
+        batch_size = input_signal.shape[0]
+        
+        # 确保状态维度匹配 Batch
+        if self.v.shape[0] != batch_size and self.v.dim() == 1:
+             # 如果是首次运行或 batch 变化，广播状态 (通常用于 Batch 训练)
+             # 对于实时交互，batch=1
+             pass 
+ 
+        # 1. 电流整合
+        # I = W_in * Input + W_rec * Spikes
+        input_current = input_signal @ self.W_in
+        rec_current = self.spikes @ self.W_rec
+        total_current = input_current + rec_current
+        
+        if external_current is not None:
+            total_current += external_current
+        
+        # 2. LIF 动力学更新
+        # dv/dt = (I - v) / tau
+        # v[t+1] = v[t] * decay + I * (1-decay)
+        
+        # 处于不应期的神经元电压保持为 0
+        non_refractory = (self.ref <= 0).float()
+        
+        new_v = self.v * self.decay + total_current * (1 - self.decay)
+        
+        # 应用不应期屏蔽
+        self.v = new_v * non_refractory
+        
+        # 3. 脉冲生成 (阈值 = 1.0)
+        self.spikes = (self.v > 1.0).float()
+        
+        # 4. 复位与不应期设定
+        # 发放脉冲后，电压重置为 0 (Hard Reset) 或减去阈值 (Soft Reset). 这里用 Hard Reset。
+        self.v = self.v * (1 - self.spikes)
+        
+        # 设定不应期计时 (秒)
+        self.ref = torch.where(self.spikes > 0, torch.ones_like(self.ref) * self.tau_ref, self.ref)
+        self.ref -= self.dt
+        
+        return self.spikes
+
+    def step(self, input_vec, dopamine=0.0, cognitive_bias=None):
+        """
+        完整的认知单步 (包含读出预测)
+        """
+        # 转为 Tensor
+        if not isinstance(input_vec, torch.Tensor):
+            x = torch.tensor(input_vec, dtype=torch.float32, device=self.device)
+        else:
+            x = input_vec
+            
+        # 注入 自上而下 (Top-down) 的偏置 (作为额外的电流注入)
+        bias_tensor = None
+        if cognitive_bias is not None:
+            if not isinstance(cognitive_bias, torch.Tensor):
+                 bias_tensor = torch.tensor(cognitive_bias, dtype=torch.float32, device=self.device)
+            else:
+                 bias_tensor = cognitive_bias
+            # 假设 cognitive_bias 已经是 (N_Neurons,) 的维度
+            
+        # 运行动力学
+        spikes = self.forward(x, external_current=bias_tensor)
+        
+        # 计算读出层输出 (预测值)
+        # y = Spikes @ W_out
+        prediction = spikes @ self.W_out
+        
+        # 学习规则 (如果开启在线学习/多巴胺)
+        # 简单 Hebbian: dW = eta * dopamine * (Pre * Post)
+        # 这里仅在 Sleep 阶段训练，所以实时步跳过 W_out 更新
+        
+        return spikes.cpu().numpy().flatten(), prediction.cpu().detach().numpy().flatten()
