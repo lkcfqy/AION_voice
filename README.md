@@ -1,28 +1,52 @@
 # AION Voice
 
-## English Version
+## Project Description
+AION Voice is an advanced voice recognition software that integrates artificial intelligence to enhance user experiences through voice commands and natural language processing.
 
-This repository contains data and programs for AION Voice, a project aimed at providing high-quality voice synthesis. The project includes various algorithms and models to enhance the voice synthesis experience.
+## Architecture
+The project follows a modular architecture, enabling easy maintenance and scalability. Key components include:
+- Voice Recognition Module
+- Natural Language Processing Module
+- User Interface Component
 
-### Features
-- High-quality voice synthesis
-- Multiple voice options
-- Customizable parameters
+## Features
+- Accurate voice recognition
+- Natural language understanding
+- Multi-platform support
+- Real-time command processing
 
-### Installation
-To install, clone this repository and install the required dependencies:
+## Installation
+To install AION Voice, follow these steps:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/lkcfqy/AION_voice.git
+   ```
+2. Navigate to the project directory:
+   ```bash
+   cd AION_voice
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
+## Usage
+After installation, you can run the application using:
 ```bash
-git clone https://github.com/lkcfqy/AION_voice.git
-cd AION_voice
-pip install -r requirements.txt
+python main.py
 ```
+Follow the on-screen instructions to interact with the voice recognition system.
 
-### Usage
-Follow the instructions in the documentation to use the voice synthesis features.
-
-### Contributing
-We welcome contributions! Please see the CONTRIBUTING.md file for details.
-
-### License
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Contribution Guidelines
+We welcome contributions! Please follow these steps:
+1. Fork the repository.
+2. Create a new branch:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+3. Make your changes and commit them.
+4. Push to the branch:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+5. Submit a pull request.
